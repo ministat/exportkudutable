@@ -4,6 +4,10 @@ import org.kohsuke.args4j.CmdLineParser;
 import org.kohsuke.args4j.Option;
 
 public class ArgumentsParser {
+    @Option(name = "-k", aliases = "--mode", required = true,
+            usage = "Specify the mode: [E]xport kudu to csv or [I]mport csv to kudu")
+    public String mode;
+
     @Option(name = "-m", aliases = "--masters", required = true, usage = "Specify the master addresses")
     public String masters;
 

@@ -16,30 +16,71 @@
 
 package org.apache.kudu.spark.examples
 
-import collection.JavaConverters._
+import org.apache.kudu.client.CreateTableOptions
 
+import collection.JavaConverters._
 import org.slf4j.LoggerFactory
 import org.apache.kudu.spark.kudu._
 import org.apache.spark.sql.SparkSession
+import org.apache.spark.sql.types.{IntegerType, StringType, StructField, StructType, TimestampType}
 
 object SparkExample {
   val logger = LoggerFactory.getLogger(SparkExample.getClass)
-  def main(args: Array[String]) {
-    val parser = new ArgumentsParser()
-    if (!parser.parseArgs(args)) {
-      return
+
+  /**
+   * Import a CSV and upsert the content to Kudu table
+   * @param spark
+   * @param parser
+   */
+  def importCsvToKudu(spark: SparkSession, parser: ArgumentsParser): Unit = {
+    val kuduMasters = parser.masters
+    val kuduTable = parser.table
+    val csvPath = parser.csvPath
+    val df = spark.sqlContext.read.format("csv")
+      .option("header", "true")
+      .option("inferSchema", "true")
+      .load(csvPath)
+    val kuduContext = new KuduContext(kuduMasters, spark.sqlContext.sparkContext)
+    import spark.implicits._
+    val schema = StructType(
+      List(StructField("id", IntegerType, false), // primary key
+        StructField("mobile_uid", StringType, true),
+        StructField("event_id", IntegerType, true),
+        StructField("property_id", IntegerType, true),
+        StructField("property_value", StringType, true),
+        StructField("session_id", StringType, true),
+        StructField("app_name", StringType, true),
+        StructField("parent_id", IntegerType, true),
+        StructField("imei", StringType, true),
+        StructField("created_on", TimestampType, true))
+    )
+    if (!kuduContext.tableExists(kuduTable)) {
+      kuduContext.createTable(kuduTable, schema, Seq("id"),
+        new CreateTableOptions().addHashPartitions(List("id").asJava, 3))
     }
+    kuduContext.upsertRows(df, kuduTable)
+    val sqlDF = spark.sqlContext
+      .read
+      .options(Map("kudu.master" -> kuduMasters, "kudu.table" -> kuduTable))
+      .format("kudu").load
+    sqlDF.createOrReplaceTempView(kuduTable)
+    spark.sql(s"SELECT count(*) from $kuduTable").show()
+  }
+
+  /**
+   * Export a Kudu table content to csv file
+   * @param spark
+   * @param parser
+   */
+  def exportKuduToCsv(spark: SparkSession, parser: ArgumentsParser): Unit = {
     val kuduMasters = parser.masters
     val kuduTable = parser.table
     val csvDir = parser.csvPath
     val showSample = parser.showSample
-
-    val spark = SparkSession.builder.appName("KuduSparkExample").getOrCreate()
-
     val startTime = System.nanoTime
     val df = spark.read.options(Map("kudu.master" -> kuduMasters, "kudu.table" -> kuduTable))
-                       .format("kudu")
-                       .load
+      .format("kudu")
+      .load
     val loadingCost = "loading to table %s took %.0f milliseconds"
       .format(kuduTable, (System.nanoTime - startTime) / 1E6)
     logger.info(loadingCost)
@@ -50,7 +91,31 @@ object SparkExample {
       spark.sql(s"select count(*) from $view").show()
     }
 
-    df.write.format("csv").save(csvDir)
+    df.coalesce(1)
+      .write
+      .format("csv")
+      .option("header", "true")
+      .save(csvDir)
     println(s"Successfully exported $kuduTable to $csvDir")
+  }
+
+  def main(args: Array[String]) {
+    val parser = new ArgumentsParser()
+    if (!parser.parseArgs(args)) {
+      return
+    }
+
+    val spark = SparkSession.builder.appName("KuduSparkExample")
+                                    .config("spark.master", "local")
+                                    .getOrCreate()
+    try {
+      if (parser.mode.equals("E")) {
+        exportKuduToCsv(spark, parser)
+      } else if (parser.mode.equals("I")) {
+        importCsvToKudu(spark, parser)
+      }
+    } finally {
+      spark.close()
+    }
   }
 }
