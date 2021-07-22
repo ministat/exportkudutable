@@ -32,14 +32,14 @@ object SparkExample {
    * @param spark
    * @param parser
    */
-  def importCsvToKudu(spark: SparkSession, parser: ArgumentsParser): Unit = {
+  def importHdfsToKudu(spark: SparkSession, parser: ArgumentsParser, format: String): Unit = {
     val kuduMasters = parser.masters
     val kuduTable = parser.table
-    val csvPath = parser.csvPath
-    val df = spark.sqlContext.read.format("csv")
+    val path = parser.filePath
+    val df = spark.sqlContext.read.format(format)
       .option("header", "true")
       .option("inferSchema", "true")
-      .load(csvPath)
+      .load(path)
     val kuduContext = new KuduContext(kuduMasters, spark.sqlContext.sparkContext)
     import spark.implicits._
     val schema = StructType(
@@ -72,10 +72,10 @@ object SparkExample {
    * @param spark
    * @param parser
    */
-  def exportKuduToCsv(spark: SparkSession, parser: ArgumentsParser): Unit = {
+  def exportKuduToHdfs(spark: SparkSession, parser: ArgumentsParser, format: String): Unit = {
     val kuduMasters = parser.masters
     val kuduTable = parser.table
-    val csvDir = parser.csvPath
+    val dir = parser.filePath
     val showSample = parser.showSample
     val startTime = System.nanoTime
     val df = spark.read.options(Map("kudu.master" -> kuduMasters, "kudu.table" -> kuduTable))
@@ -93,10 +93,11 @@ object SparkExample {
 
     df.coalesce(1)
       .write
-      .format("csv")
+      .format(format)
       .option("header", "true")
-      .save(csvDir)
-    println(s"Successfully exported $kuduTable to $csvDir")
+      .mode("overwrite")
+      .save(dir)
+    println(s"Successfully exported $kuduTable to $dir")
   }
 
   def main(args: Array[String]) {
@@ -104,15 +105,24 @@ object SparkExample {
     if (!parser.parseArgs(args)) {
       return
     }
-
+    var format = "csv"
+    if (parser.iformat.equals("C")) {
+      format = "csv"
+    } else if (parser.iformat.equals("P")) {
+      format = "parquet"
+    } else {
+      println(s"Invalid format: ${parser.iformat}")
+      return
+    }
     val spark = SparkSession.builder.appName("KuduSparkExample")
                                     .config("spark.master", "local")
                                     .getOrCreate()
+
     try {
       if (parser.mode.equals("E")) {
-        exportKuduToCsv(spark, parser)
+        exportKuduToHdfs(spark, parser, format)
       } else if (parser.mode.equals("I")) {
-        importCsvToKudu(spark, parser)
+        importHdfsToKudu(spark, parser, format)
       }
     } finally {
       spark.close()
